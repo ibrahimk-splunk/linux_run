@@ -1,0 +1,174 @@
+#!/usr/bin/python
+
+import os
+import sys
+import csv
+from pexpect import pxssh, ExceptionPexpect
+from optparse import OptionParser
+
+# Parser for command line options, the input file,
+# [username and password, if not provided in the input file with -l option]
+
+INPUT_DIR = "../input"
+
+
+def option_parser():
+    # parser = common _parser()
+
+    parser = OptionParser(conflict_handler="resolve")
+
+    parser.usage = "%prog [OPTIONS] command [...]"
+    parser.epilog = "Example: lcrun.py -i hosts.csv 'ls -l' "
+    parser.add_option('-i', '--inputs', dest="input_file", action='append',
+                      help='hosts file (each line "servername,username,password")')
+    parser.add_option('-l', '--hostname', dest='hostname', action='append', help='Additional hostname [optional]')
+    parser.add_option('-p', '--password', dest='password', action='append',
+                      help='Password for the additional host, with -l [optional]')
+    parser.add_option('-u', '--username', dest='username',
+                      help='Username for the additional host used with -l [optional]', action='append')
+
+    return parser
+
+
+# Checking the arguments and values. if no input file is given and no extra host added with -l option, script returns
+# an error and exits the program
+
+def parse_args():
+    parser = option_parser()
+    (opts, arguments) = parser.parse_args()
+
+    if opts.input_file is None and opts.hostname is None:
+        parser.error("Not entered the input file. Example: lcrun.py -i hosts.csv \"ls -l\"")
+
+    if len(arguments) == 0:
+        parser.error('Command not specified.')
+    return opts, arguments
+
+
+# Function for connecting to the host and executing the given comment with password authentication, the input file
+# contains three columns with hostname/server name, username and password
+
+def connect_host(hostname, username, password, commandline):
+    try:
+        print 'Using password authentication'
+        s = pxssh.pxssh()
+        s.login(hostname, username, password, login_timeout=20)
+        if IsSudo:
+            s.sendline("sudo su")
+            s.expect(".* password .*", timeout=10)
+            s.sendline(password)
+            commandline = commandline[5:]
+        s.sendline(commandline)
+        s.prompt(timeout=10)
+        print 'OUTPUT: '
+        print '\t', s.before
+        if IsSudo:
+            s.sendline('exit')
+        s.logout()
+        print '=============================='
+
+    except ExceptionPexpect as ep:
+        print 'Could not connect to the host ->', hostname, "\nError: ", ep
+    except e:
+        print "Could not connect to the host"
+
+
+# Function to connect to the given host using key based authentication. the input file should have two columns with
+# hostname/server name and username
+# Most importantly the ssh agent should be running with the added private keys
+
+def connect_host_key(hostname, username, commandline):
+    try:
+        print 'using Key based Authentication'
+        s = pxssh.pxssh()
+        s.SSH_OPTS += " -o StrictHostKeyChecking=no"
+        s.force_password = False
+        s.login(hostname, username, login_timeout=20)
+        if IsSudo:
+            s.sendline("sudo su")
+            s.expect(".* password .*", timeout=10)
+            s.sendline('object00')
+            commandline = commandline[5:]
+        s.sendline(commandline)
+        s.prompt(timeout=10)
+        print 'OUTPUT: '
+        print '\t', s.before
+        if IsSudo:
+            s.sendline('exit')
+        s.logout()
+        print '=============================='
+
+    except ExceptionPexpect as ep:
+        print 'Could not connect to the host ->', hostname, "\nError: ", ep
+
+
+# Function to check the number of columns in the input file, If there are 2 columns, it authenticates the host with
+# key based authentication and if it have 3 columns, it tries to authenticate the host with password authentication
+
+def check_num_cols(line):
+    ncol = len(line)
+
+    return ncol
+
+
+# Function to run the commands on the hosts mentioned in the input file.
+
+def connect_using_file():
+    input_file = os.path.join(INPUT_DIR, ''.join(options.input_file))
+
+    try:
+        with open(input_file, 'rb') as f:
+            reader = csv.reader(f)
+
+            for i, line in enumerate(reader):
+                if len(line) == 0:  # If there is any blank lines in the file, ignore it
+                    continue
+                print "\n\n\nConnecting to host", line[0]
+                print '##############################'
+                print '\t', line[0]
+                print '##############################'
+                ncols = check_num_cols(line)
+
+                if ncols == 3:
+                    connect_host(line[0], line[1], line[2], cmdline)
+                elif ncols == 2:
+                    connect_host_key(line[0], line[1], cmdline)
+
+                else:
+                    print 'ERROR ::: Missing entries in the input file'
+    except IOError as input_error:
+        print "Cannot open the input file :", input_error
+
+
+# Function to check whether the command entered is a sudo command. In this case
+# Confirm to run the sudo command on the server.
+
+def check_sudo_cmd(commandline):
+    if commandline.startswith('sudo '):
+        confirm = raw_input('\nCommand requires sudo access,do you want to continue(y/n)?')
+        if confirm == 'y' or 'Y':
+            return 1
+        else:
+            print '\nExiting the program, since it is a sudo command'
+            exit(0)
+
+
+# Main function
+
+if __name__ == "__main__":
+
+    options, args = parse_args()
+    cmdline = ''.join(args)
+    IsSudo = check_sudo_cmd(cmdline)
+    try:
+        if options.input_file is not None:
+            connect_using_file()
+
+        if options.hostname is not None:
+            connect_host(''.join(options.hostname), ''.join(options.username), ''.join(options.password), cmdline)
+
+            # Throw the below error in case an error occurs during the reading of input file
+    except IOError:
+        _, e, _ = sys.exc_info()
+        sys.stderr.write('Could not open hosts file: %s\n' % e.strerror)
+        sys.exit(1)
